@@ -1,0 +1,31 @@
+# Local environment values (may contain credentials)
+.env
+.env.*
+!.env.example
+
+# Secrets and private keys
+*.pem
+*.key
+id_rsa
+id_ed25519
+**/.ssh/
+
+# Runtime storage, user information, local databases
+/data/
+/backups/
+*.sqlite
+*.sqlite3
+*.db
+*.sql
+
+# Logs and diagnostics
+*.log
+*.tmp
+*.bak
+*.backup
+*docker-inspect*.json
+*tailscale-status*.txt
+
+# OS/editor artifacts
+.DS_Store
+Thumbs.db
