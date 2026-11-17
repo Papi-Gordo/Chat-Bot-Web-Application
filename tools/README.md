@@ -1,4 +1,4 @@
-# Stock Info Tool — Data Accuracy and AI Integration Improvements
+# Stock Info Tool v2.0.1 — Data Accuracy and AI Integration Improvements
 
 **Original Developer:** [ichrist](https://github.com/iChristGit)
 
