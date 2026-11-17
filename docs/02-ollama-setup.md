@@ -1,5 +1,7 @@
 # Ollama: native Ubuntu service
 
+*update to include new models that have been downloaded*
+
 Ollama is installed directly on Ubuntu, not in the Docker container. The installed binary is started by `systemd` using the service file at:
 
 ```text
