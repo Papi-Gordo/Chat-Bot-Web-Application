@@ -1,5 +1,7 @@
 # Architecture and investigation notes
 
+*Want to eventually place ollama into container to decrease chance of hanging entire server, need to weigh against losing speed if max cpu use limited*
+
 ## Confirmed connections
 
 ```text
