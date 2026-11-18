@@ -8,7 +8,7 @@ description: >
   Commands:
     - "stock info AAPL" / "how is Apple doing?"  → full quote card
     - "AAPL price"                                 → current price
-    - "GOOGL 52-week range"                        → price range details
+    - "GOOGL 52-week range"                        → quote with actual Yahoo 52-week data
     - "stock chart TSLA"                           → price chart card
     - "compare AAPL MSFT"                          → side-by-side comparison
 
@@ -19,7 +19,7 @@ description: >
 
 author: ichrist
 contributer: Papi-Gordo
-version: 2.0.1
+version: 2.1.0
 license: MIT
 requirements: httpx
 """
@@ -218,6 +218,92 @@ def _change_sign(change):
     return f"+{change:.2f}" if change >= 0 else f"{change:.2f}"
 
 
+def _quote_context_for_model(quote: dict, requested_ticker: str) -> dict:
+    """Return Yahoo quote fields as structured model-visible data; never guess missing data."""
+    if not quote:
+        return {
+            "ticker": requested_ticker,
+            "status": "unavailable",
+            "error": "No verified Yahoo Finance quote was available; do not estimate prices or ranges.",
+        }
+
+    market_time = quote.get("regularMarketTime")
+    try:
+        market_time_utc = (
+            datetime.fromtimestamp(market_time, timezone.utc).isoformat()
+            if market_time is not None else None
+        )
+    except (ValueError, TypeError, OverflowError, OSError):
+        market_time_utc = None
+
+    low_52w = quote.get("fiftyTwoWeekLow")
+    high_52w = quote.get("fiftyTwoWeekHigh")
+    currency = quote.get("currency") or "currency unavailable"
+    verified_range = (
+        f"{_format_price(low_52w)} to {_format_price(high_52w)} {currency}"
+        if low_52w is not None and high_52w is not None
+        else None
+    )
+
+    return {
+        "ticker": quote.get("symbol", requested_ticker),
+        "status": "success",
+        "verified_52_week_range": verified_range,
+        "name": quote.get("longName"),
+        "currency": quote.get("currency"),
+        "price": quote.get("regularMarketPrice"),
+        "previous_close": quote.get("regularMarketPreviousClose"),
+        "change": quote.get("regularMarketChange"),
+        "change_percent": quote.get("regularMarketChangePercent"),
+        "day_open": quote.get("regularMarketOpen"),
+        "day_low": quote.get("regularMarketDayLow"),
+        "day_high": quote.get("regularMarketDayHigh"),
+        "day_volume": quote.get("regularMarketVolume"),
+        # This is the exact source used to paint the 52W Range in the quote card.
+        "fifty_two_week_low": quote.get("fiftyTwoWeekLow"),
+        "fifty_two_week_high": quote.get("fiftyTwoWeekHigh"),
+        "market_time_utc": market_time_utc,
+    }
+
+
+def _result_context(action: str, requested_tickers: list, quotes: list,
+                    chart_summary: Optional[dict] = None) -> dict:
+    """Provide the LLM with the same factual Yahoo data rendered to the user."""
+    structured_quotes = [
+        _quote_context_for_model(q, ticker)
+        for ticker, q in zip(requested_tickers, quotes)
+    ]
+    all_valid = bool(structured_quotes) and all(
+        q["status"] == "success" for q in structured_quotes
+    )
+    if action == "chart" and not chart_summary:
+        all_valid = False
+
+    result = {
+        "status": "success" if all_valid else "partial_or_unavailable",
+        "source": "Yahoo Finance chart/quote metadata",
+        "action": action,
+        "retrieved_at_utc": datetime.now(timezone.utc).isoformat(),
+        "quotes": structured_quotes,
+        "instruction": (
+            "The quotes array contains the verified Yahoo Finance fields used for the displayed "
+            "stock cards. When answering about current prices, the day's range, or the "
+            "52-week range, use these exact numbers and the market_time_utc timestamp. "
+            "The 52-week range is fifty_two_week_low through fifty_two_week_high; "
+            "do not confuse this with the day's range or the chart period's closing-price range. "
+            "Do not replace a missing value with an estimate, old memory, or guessed number. "
+            "If data is missing or stale, say so. For user questions about live market "
+            "data, invoke the stock tool again instead of relying on a previous response."
+        ),
+    }
+    if action == "chart":
+        result["chart_summary"] = chart_summary or {
+            "status": "unavailable",
+            "note": "The requested price chart could not be summarized; do not invent its statistics.",
+        }
+    return result
+
+
 def _build_quote_card(quote: dict, compact: bool = False) -> str:
     """Build a beautiful quote card for a single stock."""
     if not quote:
@@ -349,7 +435,7 @@ def _build_sparkline(data: list, positive: bool) -> str:
     )
 
 
-def _build_chart_card(ticker: str, days: int = 30) -> str:
+def _build_chart_card(ticker: str, days: int = 30, chart_context: Optional[dict] = None) -> str:
     """Build a price chart card with a full chart view."""
     days_map = {
         7: "5d",
@@ -362,7 +448,6 @@ def _build_chart_card(ticker: str, days: int = 30) -> str:
 
     try:
         chart = _get_chart(ticker, range_key)
-        quote = _get_quote(ticker)
     except Exception as exc:
         return f'<div style="color:#f44336;padding:12px;">❌ Could not fetch chart: {exc}</div>'
 
@@ -377,6 +462,7 @@ def _build_chart_card(ticker: str, days: int = 30) -> str:
     volumes = quotes[0].get("volume", []) or []
 
     symbol = meta.get("symbol", ticker)
+    short_name = meta.get("shortName") or ticker
     currency = meta.get("currency", "USD")
     current_price = meta.get("regularMarketPrice")
     chart_start = meta.get("chartPreviousClose")
@@ -496,9 +582,25 @@ def _build_chart_card(ticker: str, days: int = 30) -> str:
     start_price = prices[0]
     period_return = ((prices[-1] / start_price) - 1) * 100 if start_price else 0
 
+    if chart_context is not None:
+        chart_context.update({
+            "status": "success",
+            "requested_chart_days": days,
+            "yahoo_range_parameter": range_key,
+            "first_close": prices[0],
+            "last_close": prices[-1],
+            "lowest_close": min(prices),
+            "highest_close": max(prices),
+            "period_change": change,
+            "period_change_percent": period_return,
+            "first_point_utc": datetime.fromtimestamp(valid_data[0][0], timezone.utc).isoformat(),
+            "last_point_utc": datetime.fromtimestamp(valid_data[-1][0], timezone.utc).isoformat(),
+            "explanation": "High and low are closing prices within this chart period, not the 52-week high/low.",
+        })
+
     # Pre-compute values to avoid [] in f-strings (Python 3.10/3.11 compat)
     _last_price = prices[-1]
-    _open_price = _format_price(valid_data[0][1]) if valid_data else "N/A"
+    _open_price = valid_data[0][1] if valid_data else None
 
     card_html = f"""<!DOCTYPE html>
 <html lang="en">
@@ -547,11 +649,13 @@ html,body{{background:transparent;font-family:-apple-system,BlinkMacSystemFont,'
     return card_html
 
 
-def _build_compare_card(tickers: list) -> str:
+def _build_compare_card(tickers: list, quotes_out: Optional[list] = None) -> str:
     """Build a side-by-side comparison card for multiple stocks."""
     cards_html = []
     for t in tickers:
         quote = _get_quote(t.strip())
+        if quotes_out is not None:
+            quotes_out.append(quote)
         if quote:
             cards_html.append(_build_quote_card(quote, compact=True))
         else:
@@ -646,18 +750,21 @@ class Tools:
           - "compare AAPL MSFT"                         → side-by-side comparison
           - "AAPL 52-week range"                        → quote card with range info
 
+        Use this tool for all live stock price questions, 52-week high/low questions,
+        charts, and comparisons; never infer financial figures from model memory.
+
         :param ticker: Stock ticker symbol(s), e.g. "AAPL" or "AAPL, MSFT" for comparison.
-        :param action: One of "quote", "chart", "compare".
+        :param action: One of "quote", "chart", "compare". Choose "quote" for a 52-week range.
         :param days: Chart period in days (7, 30, 90, 180, 365). Defaults to valve setting.
-        :return: Rendered HTML stock info card.
+        :return: Rendered HTML stock info card AND exact JSON model context.
         """
         days = days or self.valves.chart_days
 
         try:
             # Parse tickers from the ticker parameter (handles "compare AAPL MSFT" style)
             tickers = _parse_tickers(ticker if ticker else "")
-
-            if action.lower() == "compare" or (len(tickers) > 1 and not action):
+            action = (action or "quote").lower()
+            if action == "compare" or len(tickers) > 1:
                 action = "compare"
 
             if action == "compare":
@@ -670,7 +777,9 @@ class Tools:
                     __event_emitter__,
                     f"📊 Fetching comparison for {', '.join(tickers)}…",
                 )
-                html = _build_compare_card(tickers)
+                quotes = []
+                html = _build_compare_card(tickers, quotes_out=quotes)
+                context = _result_context("compare", tickers, quotes)
 
             elif action == "chart":
                 if not tickers:
@@ -680,7 +789,10 @@ class Tools:
 
                 ticker = tickers[0].upper()
                 await _emit(__event_emitter__, f"📈 Fetching chart for {ticker}…")
-                html = _build_chart_card(ticker, days)
+                chart_summary = {}
+                html = _build_chart_card(ticker, days, chart_context=chart_summary)
+                quote = _get_quote(ticker)
+                context = _result_context("chart", [ticker], [quote], chart_summary)
 
             else:  # default: quote
                 if not tickers:
@@ -692,6 +804,7 @@ class Tools:
                 await _emit(__event_emitter__, f"📋 Fetching quote for {ticker}…")
                 quote = _get_quote(ticker)
                 html = _build_quote_card(quote)
+                context = _result_context("quote", [ticker], [quote])
 
             await _emit(__event_emitter__, "✅ Stock data loaded!", done=True)
 
@@ -699,32 +812,9 @@ class Tools:
                 content=html, headers={"Content-Disposition": "inline"}
             )
 
-            if action == "quote" and quote:
-                context = {
-                    "status": "success",
-                    "source": "Yahoo Finance",
-                    "ticker": quote["symbol"],
-                    "price": quote["regularMarketPrice"],
-                    "currency": quote["currency"],
-                    "previous_close": quote["regularMarketPreviousClose"],
-                    "change": quote["regularMarketChange"],
-                    "change_percent": quote["regularMarketChangePercent"],
-                    "as_of_utc": (
-                        datetime.fromtimestamp(
-                            quote["regularMarketTime"], timezone.utc
-                        ).isoformat()
-                        if quote.get("regularMarketTime")
-                        else None
-                    ),
-                    "instruction": (
-                        "Use these exact quote values. "
-                        "Do not invent or estimate prices. "
-                        "Check the quote timestamp for freshness."
-                    ),
-                }
-                return response, context
-
-            return response
+            # For every action, give the LLM factual context alongside the HTML.
+            # Open WebUI explicitly supports (HTMLResponse, dict) for rich UI tools.
+            return response, context
 
         except ValueError as ve:
             msg = f"❌ {ve}"
