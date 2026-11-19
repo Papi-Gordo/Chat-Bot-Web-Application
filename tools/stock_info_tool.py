@@ -231,7 +231,8 @@ def _quote_context_for_model(quote: dict, requested_ticker: str) -> dict:
     try:
         market_time_utc = (
             datetime.fromtimestamp(market_time, timezone.utc).isoformat()
-            if market_time is not None else None
+            if market_time is not None
+            else None
         )
     except (ValueError, TypeError, OverflowError, OSError):
         market_time_utc = None
@@ -266,8 +267,12 @@ def _quote_context_for_model(quote: dict, requested_ticker: str) -> dict:
     }
 
 
-def _result_context(action: str, requested_tickers: list, quotes: list,
-                    chart_summary: Optional[dict] = None) -> dict:
+def _result_context(
+    action: str,
+    requested_tickers: list,
+    quotes: list,
+    chart_summary: Optional[dict] = None,
+) -> dict:
     """Provide the LLM with the same factual Yahoo data rendered to the user."""
     structured_quotes = [
         _quote_context_for_model(q, ticker)
@@ -435,7 +440,9 @@ def _build_sparkline(data: list, positive: bool) -> str:
     )
 
 
-def _build_chart_card(ticker: str, days: int = 30, chart_context: Optional[dict] = None) -> str:
+def _build_chart_card(
+    ticker: str, days: int = 30, chart_context: Optional[dict] = None
+) -> str:
     """Build a price chart card with a full chart view."""
     days_map = {
         7: "5d",
@@ -583,20 +590,26 @@ def _build_chart_card(ticker: str, days: int = 30, chart_context: Optional[dict]
     period_return = ((prices[-1] / start_price) - 1) * 100 if start_price else 0
 
     if chart_context is not None:
-        chart_context.update({
-            "status": "success",
-            "requested_chart_days": days,
-            "yahoo_range_parameter": range_key,
-            "first_close": prices[0],
-            "last_close": prices[-1],
-            "lowest_close": min(prices),
-            "highest_close": max(prices),
-            "period_change": change,
-            "period_change_percent": period_return,
-            "first_point_utc": datetime.fromtimestamp(valid_data[0][0], timezone.utc).isoformat(),
-            "last_point_utc": datetime.fromtimestamp(valid_data[-1][0], timezone.utc).isoformat(),
-            "explanation": "High and low are closing prices within this chart period, not the 52-week high/low.",
-        })
+        chart_context.update(
+            {
+                "status": "success",
+                "requested_chart_days": days,
+                "yahoo_range_parameter": range_key,
+                "first_close": prices[0],
+                "last_close": prices[-1],
+                "lowest_close": min(prices),
+                "highest_close": max(prices),
+                "period_change": change,
+                "period_change_percent": period_return,
+                "first_point_utc": datetime.fromtimestamp(
+                    valid_data[0][0], timezone.utc
+                ).isoformat(),
+                "last_point_utc": datetime.fromtimestamp(
+                    valid_data[-1][0], timezone.utc
+                ).isoformat(),
+                "explanation": "High and low are closing prices within this chart period, not the 52-week high/low.",
+            }
+        )
 
     # Pre-compute values to avoid [] in f-strings (Python 3.10/3.11 compat)
     _last_price = prices[-1]
@@ -824,3 +837,4 @@ class Tools:
             msg = f"❌ Could not fetch stock info: {exc}"
             await _emit(__event_emitter__, msg, done=True)
             return msg
+  
